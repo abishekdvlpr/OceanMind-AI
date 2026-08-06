@@ -1,0 +1,25 @@
+# --- Core & Data Handling ---
+pandas>=2.0
+numpy>=1.24
+xarray>=2024.1.0
+netCDF4>=1.6
+
+# --- Frontend & Visualization ---
+streamlit>=1.45
+plotly>=5.18
+
+# --- Database (SQL & Geospatial) ---
+SQLAlchemy>=2.0
+psycopg2-binary>=2.9
+GeoAlchemy2>=0.14
+
+# --- AI, LLM & Vector Store ---
+# langchain-ollama supplies langchain_ollama.llms.OllamaLLM, which is the only
+# LangChain import this project makes. langchain-community is NOT required.
+langchain-ollama>=0.2
+sentence-transformers>=2.6
+chromadb>=0.5
+
+# --- Utilities ---
+requests
+python-dotenv
