@@ -26,3 +26,24 @@ chroma_db/
 # OS
 .DS_Store
 Thumbs.db
+
+# Streamlit
+.streamlit/
+
+# Cache
+obis_cache/
+
+# Local database
+chroma_db/
+
+# Videos
+*.mp4
+
+# Images
+*.png
+*.jpg
+*.jpeg
+
+# Documents
+*.pptx
+*.pdf
