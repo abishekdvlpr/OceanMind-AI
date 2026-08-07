@@ -35,7 +35,7 @@ import argparse
 import logging
 import random
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 import sqlalchemy as sa
@@ -43,6 +43,12 @@ from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from config import USE_SQLITE, get_db_url
+
+# OBIS access lives in its own module so this file stays a persistence layer.
+try:
+    import obis_client
+except Exception:  # pragma: no cover - degrades to fisheries-only
+    obis_client = None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -84,24 +90,64 @@ class FisheriesLanding(MarineBase):
     geom = _geom_column()
 
 
-class EdnaSample(MarineBase):
-    __tablename__ = "edna_samples"
+class BiodiversityOccurrence(MarineBase):
+    """
+    Real marine biodiversity occurrences harvested from the OBIS Occurrence API.
+
+    Replaces the former representative `edna_samples` table. Every row here
+    originates from a published OBIS dataset; nothing is generated. The eight
+    required reporting fields are the first eight columns.
+    """
+
+    __tablename__ = "biodiversity_occurrences"
 
     id = sa.Column(sa.Integer, primary_key=True, autoincrement=True)
-    sample_id = sa.Column(sa.String, index=True)
-    lat = sa.Column(sa.Float)
-    lon = sa.Column(sa.Float)
+
+    # --- required reporting fields ---
+    occurrence_id = sa.Column(sa.String, index=True)   # provider occurrenceID
+    scientific_name = sa.Column(sa.String, index=True)
+    accepted_name = sa.Column(sa.String, index=True)   # WoRMS-accepted species
+    latitude = sa.Column(sa.Float)
+    longitude = sa.Column(sa.Float)
+    event_date = sa.Column(sa.Date, index=True)
     depth = sa.Column(sa.Float)                        # metres
-    sample_date = sa.Column(sa.Date, index=True)
-    marker_gene = sa.Column(sa.String, index=True)     # COI / 18S rRNA / 12S rRNA
-    sequence_id = sa.Column(sa.String)                 # accession-style identifier
+    source = sa.Column(sa.String, index=True)          # institution / dataset
+
+    # --- provenance ---
+    obis_id = sa.Column(sa.String, index=True)         # OBIS record UUID
+    dataset_id = sa.Column(sa.String)
+    dataset_name = sa.Column(sa.String)
+    license = sa.Column(sa.String)                     # per-record CC licence
+    basis_of_record = sa.Column(sa.String)
+
+    # --- taxonomy ---
+    aphia_id = sa.Column(sa.Integer, index=True)
+    taxon_rank = sa.Column(sa.String)
+    kingdom = sa.Column(sa.String, index=True)
+    phylum = sa.Column(sa.String, index=True)
+    class_name = sa.Column(sa.String)
+    order_name = sa.Column(sa.String)
+    family = sa.Column(sa.String, index=True)
+    genus = sa.Column(sa.String, index=True)
+    vernacular_name = sa.Column(sa.String)             # common name if provided
+
+    # --- molecular biodiversity (eDNA-derived records) ---
+    is_dna_derived = sa.Column(sa.Boolean, index=True)
+    marker_gene = sa.Column(sa.String, index=True)     # COI / 16S / 18S / 12S
+    sequence_id = sa.Column(sa.String)                 # ENA / SRA accession
     read_count = sa.Column(sa.Integer)
-    assigned_taxon = sa.Column(sa.String, index=True)  # NULL when unassigned
-    taxon_rank = sa.Column(sa.String)                  # species / genus / family
-    percent_identity = sa.Column(sa.Float)             # % match to reference
-    confidence = sa.Column(sa.Float)                   # 0-1 assignment confidence
-    is_unassigned_motu = sa.Column(sa.Boolean, index=True)
-    data_source = sa.Column(sa.String, index=True)
+
+    # --- OBIS environmental enrichment (independent of ARGO) ---
+    sst = sa.Column(sa.Float)                          # satellite-derived SST
+    sss = sa.Column(sa.Float)
+    bathymetry = sa.Column(sa.Float)
+    shore_distance_m = sa.Column(sa.Float)
+
+    # --- housekeeping ---
+    event_year = sa.Column(sa.Integer, index=True)
+    region_label = sa.Column(sa.String, index=True)    # search area used
+    ingested_at = sa.Column(sa.DateTime)
+
     geom = _geom_column()
 
 
@@ -133,24 +179,6 @@ SPECIES = [
 
 GEAR = ["Trawl Net", "Gillnet", "Purse Seine", "Hooks and Line", "Ring Seine"]
 
-# Marker genes used in marine eDNA metabarcoding
-MARKERS = ["COI", "18S rRNA", "12S rRNA"]
-
-TAXA = [
-    ("Sardinella longiceps", "species"), ("Rastrelliger kanagurta", "species"),
-    ("Thunnus albacares", "species"),    ("Penaeus indicus", "species"),
-    ("Stolephorus", "genus"),            ("Carangidae", "family"),
-    ("Engraulidae", "family"),           ("Decapterus russelli", "species"),
-    ("Calanus", "genus"),                ("Copepoda", "class"),
-]
-
-# eDNA stations sit on the ARGO footprint (Arabian Sea + Bay of Bengal)
-EDNA_STATIONS = [
-    (10.50, 72.80), (12.10, 68.90), (15.40, 70.30), (18.20, 69.50),
-    (8.90, 76.10),  (14.30, 74.00), (11.70, 80.20), (16.80, 82.40),
-    (19.30, 87.10), (13.60, 78.90), (17.35, 68.35), (9.98, 63.46),
-]
-
 SEED_START = date(2024, 1, 1)   # aligned with the ingested ARGO window
 SEED_DAYS = 5
 
@@ -178,11 +206,22 @@ class MarineDataManager:
             logger.error(f"Could not initialize marine tables: {e}")
             return False
 
-    def reset(self):
-        """Drops ONLY fisheries_landings and edna_samples. Never touches ARGO."""
+    def reset(self, tables=None):
+        """
+        Drop marine domain tables. Never touches ARGO.
+
+        `tables` limits the reset to a subset, so re-seeding fisheries cannot
+        destroy harvested OBIS biodiversity records and vice versa.
+        """
         try:
-            logger.warning("--- RESETTING MARINE DOMAIN TABLES ---")
-            MarineBase.metadata.drop_all(self.engine, checkfirst=True)
+            logger.warning(f"--- RESETTING MARINE TABLES: {tables or 'all'} ---")
+            if tables:
+                targets = [MarineBase.metadata.tables[t]
+                           for t in tables if t in MarineBase.metadata.tables]
+                MarineBase.metadata.drop_all(self.engine, tables=targets,
+                                             checkfirst=True)
+            else:
+                MarineBase.metadata.drop_all(self.engine, checkfirst=True)
             self.initialize()
             return True
         except Exception as e:
@@ -194,10 +233,10 @@ class MarineDataManager:
             inspector = inspect(self.engine)
             return {
                 "fisheries_landings": inspector.has_table("fisheries_landings"),
-                "edna_samples": inspector.has_table("edna_samples"),
+                "biodiversity_occurrences": inspector.has_table("biodiversity_occurrences"),
             }
         except Exception:
-            return {"fisheries_landings": False, "edna_samples": False}
+            return {"fisheries_landings": False, "biodiversity_occurrences": False}
 
     def ensure_ready(self):
         present = self.tables_present()
@@ -236,55 +275,19 @@ class MarineDataManager:
                     })
         return pd.DataFrame(rows)
 
-    def _build_edna(self, rng):
-        rows = []
-        counter = 0
-        for day_offset in range(SEED_DAYS):
-            sample_day = SEED_START + timedelta(days=day_offset)
-            for lat, lon in EDNA_STATIONS:
-                for depth in (5.0, 50.0, 200.0):
-                    if rng.random() > 0.62:
-                        continue
-                    for _ in range(rng.randint(2, 5)):
-                        counter += 1
-                        # ~18% of marine eDNA reads fail to match a reference
-                        # sequence - these are unassigned MOTUs, and reporting
-                        # them honestly is the scientifically correct behaviour.
-                        unassigned = rng.random() < 0.18
-                        if unassigned:
-                            taxon, rank = None, None
-                            identity = round(rng.uniform(72.0, 86.0), 2)
-                            confidence = round(rng.uniform(0.10, 0.45), 3)
-                        else:
-                            taxon, rank = rng.choice(TAXA)
-                            identity = round(rng.uniform(95.0, 99.9), 2)
-                            confidence = round(rng.uniform(0.78, 0.99), 3)
-                        rows.append({
-                            "sample_id": f"CMLRE-eDNA-{sample_day:%Y%m%d}-{counter:04d}",
-                            "lat": lat + rng.uniform(-0.05, 0.05),
-                            "lon": lon + rng.uniform(-0.05, 0.05),
-                            "depth": depth,
-                            "sample_date": sample_day,
-                            "marker_gene": rng.choice(MARKERS),
-                            "sequence_id": f"OM{rng.randint(100000, 999999)}",
-                            "read_count": rng.randint(120, 24000),
-                            "assigned_taxon": taxon,
-                            "taxon_rank": rank,
-                            "percent_identity": identity,
-                            "confidence": confidence,
-                            "is_unassigned_motu": unassigned,
-                            "data_source": "representative",
-                        })
-        return pd.DataFrame(rows)
-
     def seed(self, reset=True, seed_value=20260101):
-        """Deterministic seed - same input always produces the same dataset."""
-        stats = {"fisheries_rows": 0, "edna_rows": 0, "errors": []}
+        """
+        Seed the FISHERIES domain only.
+
+        Biodiversity is no longer seeded here: it is harvested from the live
+        OBIS API by ingest_biodiversity(). Fisheries behaviour is unchanged.
+        """
+        stats = {"fisheries_rows": 0, "errors": []}
         rng = random.Random(seed_value)
 
         if reset:
-            if not self.reset():
-                stats["errors"].append("Marine reset failed.")
+            if not self.reset(tables=["fisheries_landings"]):
+                stats["errors"].append("Fisheries reset failed.")
                 return stats
         else:
             self.ensure_ready()
@@ -294,32 +297,139 @@ class MarineDataManager:
             fisheries.to_sql("fisheries_landings", self.engine,
                              if_exists="append", index=False, chunksize=2000)
             stats["fisheries_rows"] = len(fisheries)
-
-            edna = self._build_edna(rng)
-            edna.to_sql("edna_samples", self.engine,
-                        if_exists="append", index=False, chunksize=2000)
-            stats["edna_rows"] = len(edna)
-
             if self.is_postgres:
-                self._populate_geometry()
-
-            logger.info(
-                f"Seeded {stats['fisheries_rows']} landings and "
-                f"{stats['edna_rows']} eDNA reads."
-            )
+                self._populate_geometry(["fisheries_landings"])
+            logger.info(f"Seeded {stats['fisheries_rows']} fisheries landings.")
         except Exception as e:
-            logger.error(f"Marine seed failed: {e}")
+            logger.error(f"Fisheries seed failed: {e}")
             stats["errors"].append(str(e))
         return stats
 
-    def _populate_geometry(self):
-        for table in ("fisheries_landings", "edna_samples"):
+    # ------------------------------------------------------------------
+    # Biodiversity ingestion (real OBIS data)
+    # ------------------------------------------------------------------
+    def ingest_biodiversity(self, area=None, lat=None, lon=None,
+                            radius_km=150.0, scientific_name=None,
+                            polygon=None, float_positions=None,
+                            max_records=None, replace=False, refresh=False):
+        """
+        Harvest real occurrences from OBIS and store them.
+
+        Exactly one search mode should be supplied:
+            area="Bay of Bengal" | "Tamil Nadu" | "Chennai"
+            lat=13.08, lon=80.27, radius_km=150
+            scientific_name="Sardinella longiceps"
+            polygon="POLYGON ((...))"
+            float_positions=[(lat, lon), ...]   # ARGO neighbourhood
+
+        Returns a stats dict including `source`, which is 'live', 'cache' or
+        'unavailable'. Nothing is written when no records are returned, so a
+        failed fetch can never silently replace real data with nothing.
+        """
+        stats = {"requested": None, "fetched": 0, "inserted": 0,
+                 "source": "unavailable", "error": None, "region_label": None,
+                 "fetched_at": None, "total_available": None}
+
+        if obis_client is None:
+            stats["error"] = ("obis_client module is unavailable; install "
+                              "requests and place obis_client.py in the project root.")
+            return stats
+
+        self.ensure_ready()
+        client = obis_client.ObisClient()
+
+        try:
+            if float_positions:
+                stats["requested"] = "argo_neighbourhood"
+                records, meta = client.fetch_around_argo_floats(
+                    float_positions, radius_km=radius_km, refresh=refresh)
+            elif polygon:
+                stats["requested"] = "polygon"
+                records, meta = client.fetch_by_polygon(
+                    polygon, max_records=max_records, refresh=refresh)
+            elif scientific_name:
+                stats["requested"] = f"species:{scientific_name}"
+                geometry = None
+                if area:
+                    resolved = obis_client.resolve_area(area)
+                    geometry = resolved[0] if resolved else None
+                records, meta = client.fetch_by_scientific_name(
+                    scientific_name, geometry=geometry,
+                    max_records=max_records, refresh=refresh)
+            elif lat is not None and lon is not None:
+                stats["requested"] = f"point:{lat},{lon}"
+                records, meta = client.fetch_by_point(
+                    lat, lon, radius_km=radius_km,
+                    max_records=max_records, refresh=refresh)
+            elif area:
+                stats["requested"] = f"area:{area}"
+                records, meta = client.fetch_by_place(
+                    area, max_records=max_records, refresh=refresh)
+            else:
+                stats["error"] = "Specify area, coordinates, species, polygon or float positions."
+                return stats
+        except Exception as e:
+            logger.error(f"OBIS fetch failed: {e}")
+            stats["error"] = str(e)
+            return stats
+
+        stats.update({
+            "fetched": len(records),
+            "source": meta.get("source", "unavailable"),
+            "error": meta.get("error"),
+            "region_label": meta.get("region_label"),
+            "fetched_at": meta.get("fetched_at"),
+            "total_available": meta.get("total_available"),
+        })
+
+        if not records:
+            return stats
+
+        try:
+            frame = pd.DataFrame(records)
+            for column in ("distance_km",):
+                if column in frame.columns:
+                    frame = frame.drop(columns=[column])
+            frame["event_date"] = pd.to_datetime(
+                frame["event_date"], errors="coerce").dt.date
+            frame["ingested_at"] = datetime.utcnow()
+
+            model_columns = {c.name for c in BiodiversityOccurrence.__table__.columns}
+            frame = frame[[c for c in frame.columns if c in model_columns]]
+
+            if replace:
+                with self.engine.connect() as conn:
+                    conn.execute(text("DELETE FROM biodiversity_occurrences"))
+                    conn.commit()
+
+            frame.to_sql("biodiversity_occurrences", self.engine,
+                         if_exists="append", index=False, chunksize=2000)
+            stats["inserted"] = len(frame)
+
+            if self.is_postgres:
+                self._populate_geometry(["biodiversity_occurrences"])
+            logger.info(
+                f"Inserted {stats['inserted']} OBIS occurrences "
+                f"(source={stats['source']})."
+            )
+        except Exception as e:
+            logger.error(f"Biodiversity insert failed: {e}")
+            stats["error"] = str(e)
+        return stats
+
+    def _populate_geometry(self, tables=None):
+        for table in (tables or ["fisheries_landings", "biodiversity_occurrences"]):
             try:
                 with self.engine.connect() as conn:
+                    lon_col, lat_col = (
+                        ("longitude", "latitude")
+                        if table == "biodiversity_occurrences" else ("lon", "lat")
+                    )
                     conn.execute(text(
                         f"UPDATE {table} "
-                        "SET geom = ST_SetSRID(ST_MakePoint(lon, lat), 4326) "
-                        "WHERE geom IS NULL AND lon IS NOT NULL AND lat IS NOT NULL;"
+                        f"SET geom = ST_SetSRID(ST_MakePoint({lon_col}, {lat_col}), 4326) "
+                        f"WHERE geom IS NULL AND {lon_col} IS NOT NULL "
+                        f"AND {lat_col} IS NOT NULL;"
                     ))
                     conn.commit()
             except Exception as e:
@@ -355,22 +465,29 @@ class MarineDataManager:
                 ")"
             )
 
-        if present.get("edna_samples"):
+        if present.get("biodiversity_occurrences"):
             blocks.append(
-                "TABLE edna_samples(\n"
+                "TABLE biodiversity_occurrences(   -- REAL data from the OBIS API\n"
                 "  id integer PRIMARY KEY,\n"
-                "  sample_id text,\n"
-                "  lat double precision, lon double precision, depth double precision,\n"
-                "  sample_date date,\n"
-                "  marker_gene text,        -- 'COI', '18S rRNA', '12S rRNA'\n"
-                "  sequence_id text,\n"
-                "  read_count integer,\n"
-                "  assigned_taxon text,     -- NULL when the read is an unassigned MOTU\n"
-                "  taxon_rank text,         -- species / genus / family / class\n"
-                "  percent_identity double precision,\n"
-                "  confidence double precision,   -- 0-1\n"
-                "  is_unassigned_motu boolean,\n"
-                "  data_source text,\n"
+                "  occurrence_id text,      -- provider occurrenceID\n"
+                "  scientific_name text,    -- as recorded\n"
+                "  accepted_name text,      -- WoRMS-accepted species name\n"
+                "  latitude double precision, longitude double precision,\n"
+                "  event_date date,         -- observation date, may be NULL\n"
+                "  depth double precision,  -- metres, may be NULL\n"
+                "  source text,             -- institution or dataset\n"
+                "  dataset_name text, license text, basis_of_record text,\n"
+                "  aphia_id integer, taxon_rank text,\n"
+                "  kingdom text, phylum text, class_name text, order_name text,\n"
+                "  family text, genus text,\n"
+                "  vernacular_name text,    -- common name when provided\n"
+                "  is_dna_derived boolean,  -- true for eDNA / sequence records\n"
+                "  marker_gene text,        -- COI, 16S rRNA, 18S rRNA, 12S rRNA\n"
+                "  sequence_id text, read_count integer,\n"
+                "  sst double precision,    -- OBIS satellite SST at the record\n"
+                "  sss double precision,\n"
+                "  bathymetry double precision, shore_distance_m double precision,\n"
+                "  event_year integer, region_label text,\n"
                 "  geom geometry(Point,4326)\n"
                 ")"
             )
@@ -378,8 +495,9 @@ class MarineDataManager:
 
     def get_summary(self):
         summary = {
-            "available": False, "fisheries_rows": 0, "edna_rows": 0,
-            "species_count": 0, "taxa_count": 0, "unassigned_motus": 0,
+            "available": False, "fisheries_rows": 0, "biodiversity_rows": 0,
+            "species_count": 0, "species_observed": 0, "dna_records": 0,
+            "data_providers": 0, "year_min": None, "year_max": None,
             "total_catch_tonnes": 0.0, "zones": 0,
         }
         present = self.tables_present()
@@ -396,19 +514,24 @@ class MarineDataManager:
                     summary["species_count"] = row["s"] or 0
                     summary["zones"] = row["z"] or 0
                     summary["total_catch_tonnes"] = float(row["c"] or 0)
-                if present.get("edna_samples"):
+                if present.get("biodiversity_occurrences"):
                     row = conn.execute(text(
-                        "SELECT COUNT(*) n, COUNT(DISTINCT assigned_taxon) t "
-                        "FROM edna_samples")).mappings().first()
-                    summary["edna_rows"] = row["n"] or 0
-                    summary["taxa_count"] = row["t"] or 0
-                    row = conn.execute(text(
-                        "SELECT COUNT(*) u FROM edna_samples "
-                        "WHERE is_unassigned_motu = 1 OR is_unassigned_motu = TRUE"
+                        "SELECT COUNT(*) n, COUNT(DISTINCT accepted_name) s, "
+                        "COUNT(DISTINCT source) src, MIN(event_year) y0, "
+                        "MAX(event_year) y1 FROM biodiversity_occurrences"
                     )).mappings().first()
-                    summary["unassigned_motus"] = row["u"] or 0
+                    summary["biodiversity_rows"] = row["n"] or 0
+                    summary["species_observed"] = row["s"] or 0
+                    summary["data_providers"] = row["src"] or 0
+                    summary["year_min"] = row["y0"]
+                    summary["year_max"] = row["y1"]
+                    row = conn.execute(text(
+                        "SELECT COUNT(*) d FROM biodiversity_occurrences "
+                        "WHERE is_dna_derived = TRUE"
+                    )).mappings().first()
+                    summary["dna_records"] = row["d"] or 0
             summary["available"] = bool(
-                summary["fisheries_rows"] or summary["edna_rows"]
+                summary["fisheries_rows"] or summary["biodiversity_rows"]
             )
         except Exception as e:
             logger.error(f"Marine summary failed: {e}")
@@ -417,32 +540,82 @@ class MarineDataManager:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Create and seed the fisheries and eDNA domain tables."
+        description="Seed fisheries and harvest real OBIS biodiversity records."
     )
     parser.add_argument("--no-reset", action="store_true",
-                        help="Append instead of dropping the marine tables first.")
+                        help="Append instead of dropping the fisheries table first.")
+    parser.add_argument("--skip-fisheries", action="store_true",
+                        help="Do not touch the fisheries table.")
+    parser.add_argument("--biodiversity", action="store_true",
+                        help="Harvest biodiversity occurrences from OBIS.")
+    parser.add_argument("--area", default="Bay of Bengal",
+                        help="Place, state or region name (e.g. 'Chennai', 'Tamil Nadu').")
+    parser.add_argument("--lat", type=float, help="Latitude for a point search.")
+    parser.add_argument("--lon", type=float, help="Longitude for a point search.")
+    parser.add_argument("--radius-km", type=float, default=150.0)
+    parser.add_argument("--species", help="Scientific name filter.")
+    parser.add_argument("--max-records", type=int, default=5000)
+    parser.add_argument("--replace", action="store_true",
+                        help="Clear biodiversity_occurrences before inserting.")
+    parser.add_argument("--refresh", action="store_true",
+                        help="Bypass the local cache and re-query OBIS.")
+    parser.add_argument("--cache-status", action="store_true",
+                        help="Show what is available offline, then exit.")
     args = parser.parse_args()
 
-    print("=" * 60)
-    print("   OceanMind AI - Marine Domain Seeder (SIH25041)")
-    print("=" * 60)
+    print("=" * 62)
+    print("   OceanMind AI - Marine Domain Loader (SIH25041)")
+    print("=" * 62)
+
+    if args.cache_status:
+        if obis_client is None:
+            print("   obis_client unavailable.")
+            return 1
+        status = obis_client.ObisClient().cache_status()
+        print(f"   Cache directory : {status['cache_dir']}")
+        print(f"   Cached records  : {status['total_records']:,}")
+        for entry in status["entries"]:
+            print(f"     - {entry['count']:>6,} records  {entry['fetched_at']}")
+        return 0
 
     manager = MarineDataManager()
-    stats = manager.seed(reset=not args.no_reset)
 
-    print(f"   Fisheries landings : {stats['fisheries_rows']:,}")
-    print(f"   eDNA reads         : {stats['edna_rows']:,}")
-    for problem in stats["errors"]:
-        print(f"   ERROR: {problem}")
+    if not args.skip_fisheries:
+        stats = manager.seed(reset=not args.no_reset)
+        print(f"   Fisheries landings : {stats['fisheries_rows']:,}")
+        for problem in stats["errors"]:
+            print(f"   ERROR: {problem}")
+
+    if args.biodiversity:
+        print("\n-> Harvesting biodiversity occurrences from OBIS...")
+        bio = manager.ingest_biodiversity(
+            area=None if (args.lat is not None and args.lon is not None) else args.area,
+            lat=args.lat, lon=args.lon, radius_km=args.radius_km,
+            scientific_name=args.species, max_records=args.max_records,
+            replace=args.replace, refresh=args.refresh,
+        )
+        print(f"   Search           : {bio['requested']}")
+        print(f"   Region           : {bio['region_label']}")
+        print(f"   Data source      : {bio['source'].upper()}")
+        if bio.get("total_available"):
+            print(f"   Available in OBIS: {bio['total_available']:,}")
+        print(f"   Records fetched  : {bio['fetched']:,}")
+        print(f"   Records inserted : {bio['inserted']:,}")
+        if bio["error"]:
+            print(f"   NOTE: {bio['error']}")
 
     s = manager.get_summary()
-    print(f"\n   Species            : {s['species_count']}")
-    print(f"   Fishing zones      : {s['zones']}")
-    print(f"   Total catch        : {s['total_catch_tonnes']:,.1f} t")
-    print(f"   Distinct taxa      : {s['taxa_count']}")
-    print(f"   Unassigned MOTUs   : {s['unassigned_motus']:,}")
-    print("=" * 60)
-    return 0 if stats["fisheries_rows"] and stats["edna_rows"] else 1
+    print("\n   DATABASE SUMMARY")
+    print(f"     Fisheries rows     : {s['fisheries_rows']:,}")
+    print(f"     Fisheries species  : {s['species_count']}   zones: {s['zones']}")
+    print(f"     Biodiversity rows  : {s['biodiversity_rows']:,}")
+    print(f"     Species observed   : {s['species_observed']:,}")
+    print(f"     DNA-derived records: {s['dna_records']:,}")
+    print(f"     Data providers     : {s['data_providers']:,}")
+    if s.get("year_min"):
+        print(f"     Observation years  : {s['year_min']} - {s['year_max']}")
+    print("=" * 62)
+    return 0
 
 
 if __name__ == "__main__":

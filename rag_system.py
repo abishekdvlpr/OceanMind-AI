@@ -37,6 +37,20 @@ try:
 except Exception:  # pragma: no cover
     MarineDataManager = None
 
+# Deterministic statistics + citations. Every number and source in an answer is
+# computed here, in Python, so the model can only narrate - never invent.
+try:
+    import marine_analysis
+except Exception:  # pragma: no cover - degrades to the previous behaviour
+    marine_analysis = None
+
+# Schema-aware validation of generated SQL. Repairs the unambiguous naming
+# mismatches between domains and converts the rest into readable messages.
+try:
+    import sql_validator
+except Exception:  # pragma: no cover
+    sql_validator = None
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -276,6 +290,15 @@ class RAGSQLQueryExecutor:
         self.query_validator = QueryValidator()
 
         # Fisheries / eDNA domains are optional and additive.
+        # Live schema index, used to check every generated statement before it
+        # reaches the database.
+        self.schema_index = None
+        if sql_validator is not None:
+            try:
+                self.schema_index = sql_validator.SchemaIndex(self.db_manager.engine)
+            except Exception as e:
+                logger.warning(f"Schema index unavailable: {e}")
+
         self.marine_manager = None
         if MarineDataManager is not None:
             try:
@@ -341,11 +364,13 @@ class RAGSQLQueryExecutor:
 10. ROW GRAIN - THIS IS THE MOST IMPORTANT RULE. Every row in argo_profiles is ONE DEPTH LEVEL, and a single float has hundreds or thousands of levels. So for any question about WHICH floats, WHERE floats are, HOW MANY floats, or any map/location question, you MUST aggregate to one row per float with GROUP BY float_id and AVG(lat), AVG(lon). If you do not, a LIMIT will return many depth levels of a single float and the map will show only one point.
 11. DEPTH PROFILES - a profile only makes sense for ONE float at a time. For any depth-profile question, restrict to a single float with WHERE float_id = '<id>' (use a specific id, or pick one with a subquery) and ORDER BY depth, with LIMIT 2000. NEVER write ORDER BY depth across the whole table: that returns only the shallowest surface rows of many different floats and plots a flat line.
 12. Aggregations (AVG, MIN, MAX, COUNT) over depth ranges are safe without GROUP BY because they collapse to one row.
-13. CROSS-DOMAIN JOINS - this platform unifies three domains: argo_profiles (ocean physics), fisheries_landings (catch), edna_samples (molecular biodiversity). Join them on SPACE and TIME, not on keys, because they are independent observation systems. Use a tolerance of about 5 degrees of latitude/longitude, and restrict argo_profiles to depth <= 50 when you mean sea-surface conditions.
+13. CROSS-DOMAIN JOINS - this platform unifies three domains: argo_profiles (ocean physics), fisheries_landings (catch), biodiversity_occurrences (marine biodiversity from OBIS). Join them on SPACE, and on TIME only when the domains actually overlap in time. They are independent observation systems with no shared keys, so use a tolerance of about 5 degrees of latitude/longitude, and restrict argo_profiles to depth <= 50 when you mean sea-surface conditions. Note that biodiversity_occurrences uses the column names latitude/longitude while argo_profiles uses lat/lon.
 14. JOIN FAN-OUT - NEVER apply SUM() to a measure across a join. argo_profiles has hundreds of rows per float, so joining it to fisheries_landings multiplies catch_tonnes many times over and produces a wildly inflated total. To combine a SUM with a joined average, compute each side in its own subquery and join the two aggregated results. AVG and COUNT(DISTINCT ...) are safe; bare SUM across a join is not.
-15. MOLECULAR BIODIVERSITY - in edna_samples, assigned_taxon IS NULL exactly when is_unassigned_motu is true. Those rows are 'dark diversity': real sequences with no reference match. Report them rather than filtering them away, because unassigned MOTU rate is a headline biodiversity metric.
-16. ALIASES - never ORDER BY or reference an alias you did not define in the SELECT list. If you order by distance, the distance expression must appear in SELECT with that alias.
-17. UNITS - ST_Distance on ::geography returns METRES. A 500 km radius is 500000, not 500.
+15. BIODIVERSITY - biodiversity_occurrences holds REAL observations harvested from the OBIS API (Ocean Biodiversity Information System, IOC-UNESCO). Use accepted_name for species-level grouping and scientific_name for what was recorded. vernacular_name is the common name and is often NULL. event_date and depth are frequently NULL because providers did not record them - never filter them out unless the question requires it, or you will discard most of the data.
+16. MOLECULAR RECORDS - rows with is_dna_derived = true come from eDNA metabarcoding; marker_gene holds COI / 16S rRNA / 18S rRNA / 12S rRNA, sequence_id holds the ENA or SRA accession and read_count the sequence read count. Filter on is_dna_derived for molecular biodiversity questions.
+17. OBIS ENVIRONMENTAL FIELDS - sst and sss on biodiversity_occurrences are satellite-derived values attached by OBIS. They are INDEPENDENT of argo_profiles.temperature, so comparing the two is a genuine cross-validation between observation systems, not a join key.
+18. ALIASES - never ORDER BY or reference an alias you did not define in the SELECT list. If you order by distance, the distance expression must appear in SELECT with that alias.
+19. UNITS - ST_Distance on ::geography returns METRES. A 500 km radius is 500000, not 500.
 
 ### SCHEMA:
 {schema}
@@ -382,14 +407,26 @@ SQL: SELECT COUNT(DISTINCT float_id) AS total_floats, COUNT(*) AS total_measurem
 User: "Compare fish catch with sea surface temperature by zone"
 SQL: SELECT c.zone_name, c.state, c.catch_t, (SELECT AVG(a.temperature) FROM argo_profiles a WHERE a.depth <= 50 AND a.lat BETWEEN c.lat - 5 AND c.lat + 5 AND a.lon BETWEEN c.lon - 5 AND c.lon + 5) AS sst_c, (SELECT COUNT(DISTINCT a.float_id) FROM argo_profiles a WHERE a.depth <= 50 AND a.lat BETWEEN c.lat - 5 AND c.lat + 5 AND a.lon BETWEEN c.lon - 5 AND c.lon + 5) AS argo_floats FROM (SELECT zone_name, state, AVG(lat) AS lat, AVG(lon) AS lon, SUM(catch_tonnes) AS catch_t FROM fisheries_landings GROUP BY zone_name, state) c ORDER BY c.catch_t DESC LIMIT 50;
 
-User: "Which species are detected by eDNA and what ocean temperature do they occur at?"
-SQL: SELECT e.assigned_taxon, COUNT(*) AS reads, AVG(e.percent_identity) AS identity, AVG(a.temperature) AS local_temp_c FROM edna_samples e JOIN argo_profiles a ON a.depth <= 100 AND a.lat BETWEEN e.lat - 5 AND e.lat + 5 AND a.lon BETWEEN e.lon - 5 AND e.lon + 5 WHERE e.assigned_taxon IS NOT NULL GROUP BY e.assigned_taxon ORDER BY reads DESC LIMIT 50;
+User: "Show biodiversity near Chennai"
+SQL: SELECT accepted_name, vernacular_name, latitude, longitude, event_date, depth, source, occurrence_id FROM biodiversity_occurrences WHERE latitude BETWEEN 11.6 AND 14.6 AND longitude BETWEEN 78.8 AND 81.8 ORDER BY event_date DESC NULLS LAST LIMIT 200;
 
-User: "Which landed species are confirmed by molecular detection?"
-SQL: SELECT f.species_common, f.landed_t, COALESCE(e.reads, 0) AS edna_reads FROM (SELECT species_common, species_scientific, SUM(catch_tonnes) AS landed_t FROM fisheries_landings GROUP BY species_common, species_scientific) f LEFT JOIN (SELECT assigned_taxon, COUNT(*) AS reads FROM edna_samples WHERE assigned_taxon IS NOT NULL GROUP BY assigned_taxon) e ON e.assigned_taxon = f.species_scientific ORDER BY f.landed_t DESC LIMIT 50;
+User: "Marine organisms near Tamil Nadu"
+SQL: SELECT accepted_name, vernacular_name, phylum, class_name, COUNT(*) AS records, MIN(latitude) AS lat_min, MAX(latitude) AS lat_max FROM biodiversity_occurrences WHERE latitude BETWEEN 8 AND 13.6 AND longitude BETWEEN 77.5 AND 81.5 GROUP BY accepted_name, vernacular_name, phylum, class_name ORDER BY records DESC LIMIT 100;
 
-User: "How much dark diversity is there by marker gene?"
-SQL: SELECT marker_gene, COUNT(*) AS reads, SUM(CASE WHEN is_unassigned_motu THEN 1 ELSE 0 END) AS unassigned_motus, 100.0 * SUM(CASE WHEN is_unassigned_motu THEN 1 ELSE 0 END) / COUNT(*) AS pct_dark_diversity FROM edna_samples GROUP BY marker_gene ORDER BY pct_dark_diversity DESC LIMIT 20;
+User: "Species recorded in the Bay of Bengal"
+SQL: SELECT accepted_name, COUNT(*) AS observations, MIN(event_year) AS first_year, MAX(event_year) AS last_year, COUNT(DISTINCT source) AS providers FROM biodiversity_occurrences WHERE latitude BETWEEN 5 AND 22.5 AND longitude BETWEEN 78 AND 95 AND accepted_name IS NOT NULL GROUP BY accepted_name ORDER BY observations DESC LIMIT 100;
+
+User: "Marine organisms near 13.08 N, 80.27 E"
+SQL: SELECT accepted_name, vernacular_name, latitude, longitude, event_date, depth, source, occurrence_id, ST_Distance(geom::geography, ST_SetSRID(ST_MakePoint(80.27, 13.08), 4326)::geography) AS distance_m FROM biodiversity_occurrences WHERE geom IS NOT NULL ORDER BY distance_m ASC LIMIT 50;
+
+User: "Biodiversity around nearby ARGO floats"
+SQL: SELECT b.accepted_name, b.vernacular_name, COUNT(*) AS records, AVG(b.sst) AS obis_sst, (SELECT AVG(a.temperature) FROM argo_profiles a WHERE a.depth <= 50 AND a.lat BETWEEN AVG(b.latitude) - 5 AND AVG(b.latitude) + 5 AND a.lon BETWEEN AVG(b.longitude) - 5 AND AVG(b.longitude) + 5) AS argo_sst FROM biodiversity_occurrences b WHERE b.accepted_name IS NOT NULL GROUP BY b.accepted_name, b.vernacular_name ORDER BY records DESC LIMIT 50;
+
+User: "Which molecular eDNA records exist and for which marker genes?"
+SQL: SELECT marker_gene, COUNT(*) AS records, COUNT(DISTINCT accepted_name) AS taxa, SUM(read_count) AS total_reads FROM biodiversity_occurrences WHERE is_dna_derived = TRUE GROUP BY marker_gene ORDER BY records DESC LIMIT 20;
+
+User: "Which landed species are also recorded in biodiversity observations?"
+SQL: SELECT f.species_common, f.landed_t, COALESCE(b.observations, 0) AS obis_observations FROM (SELECT species_common, species_scientific, SUM(catch_tonnes) AS landed_t FROM fisheries_landings GROUP BY species_common, species_scientific) f LEFT JOIN (SELECT accepted_name, COUNT(*) AS observations FROM biodiversity_occurrences GROUP BY accepted_name) b ON b.accepted_name = f.species_scientific ORDER BY f.landed_t DESC LIMIT 50;
 
 User: "Total fish landings by species"
 SQL: SELECT species_common, species_scientific, SUM(catch_tonnes) AS total_tonnes, SUM(vessels) AS vessel_trips FROM fisheries_landings GROUP BY species_common, species_scientific ORDER BY total_tonnes DESC LIMIT 50;
@@ -425,26 +462,66 @@ Rewrite it as ONE valid PostgreSQL SELECT query that answers the question. Outpu
 
 SQL Query:"""
 
-        self.response_prompt_template = """You are an expert oceanographer. The user asked about ocean data and received results. Provide a brief, helpful response.
+        self.response_prompt_template = """You are a senior marine scientist and ocean data analyst working at an operational oceanography centre. You are briefing a colleague on results just retrieved from OceanMind AI, a unified platform holding three independent observation systems: ARGO float profiles (ocean physics), OBIS occurrence records (marine biodiversity, IOC-UNESCO) and ICAR-CMFRI marine fish landings (fisheries).
 
-### User Question:
+### User question
 {question}
 
-### Data Summary:
-{data_summary}
+### Datasets queried
+{domains}
 
-### Instructions:
-1. Acknowledge what data is shown
-2. Provide 1-2 simple oceanographic insights
-3. Be encouraging and helpful
-4. Keep response concise (2-3 sentences max)
-5. Do not invent numbers that are not in the data summary
+### VERIFIED FACTS - the complete set of information available to you
+{facts}
 
-Response:"""
+### How to answer
+
+Write in this structure, using markdown bold for the section leads:
+
+**Summary.** Two or three sentences stating what the data shows and over what area and period.
+
+**Key statistics.** The most decision-relevant figures, quoted exactly as given above.
+
+**Scientific interpretation.** What these values mean oceanographically or ecologically - water-mass character, thermocline structure, seasonality, habitat suitability, fishing pressure, biodiversity representation. Explain mechanism, not just description.
+
+**Cross-domain relationships.** Discuss the computed correlations. Name the domains involved. Where a relationship could not be established, say so plainly and state what additional data would be needed.
+
+**Implications.** One short paragraph on what this suggests for conservation, fisheries management or further sampling - framed as a hypothesis consistent with the data, never as a settled conclusion.
+
+### Absolute rules
+1. Every number you write must appear in the VERIFIED FACTS block. Do not compute, estimate, round differently, extrapolate or infer any figure that is not there.
+2. Do not name a species, region, float, gear type or date that is not in the facts.
+3. Correlation is not causation. Describe associations as associations.
+4. If the facts list relationships that could not be established, you MUST mention them as limitations rather than passing over them in silence.
+5. If only one domain was queried, say so and note which additional dataset would be required to extend the analysis. Do not imply you used data you did not.
+6. Be precise and collegial, as a scientist briefing a peer. No filler, no encouragement, no apologies.
+7. Do NOT write a Sources section - one is appended automatically.
+
+Briefing:"""
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+    def _check_sql(self, sql):
+        """
+        Validate generated SQL against the live schema.
+
+        Returns (sql, report). Repairs are applied in place; unrecoverable
+        problems are reported so the caller can ask the model to try again with
+        precise feedback instead of guessing.
+        """
+        if sql_validator is None or self.schema_index is None or not sql:
+            return sql, {"ok": True, "repairs": [], "problems": [],
+                         "missing": [], "unknown_tables": [], "ambiguous": []}
+        try:
+            fixed, report = sql_validator.validate_and_repair(sql, self.schema_index)
+            for repair in report["repairs"]:
+                logger.info(f"SQL auto-repair: {repair}")
+            return fixed, report
+        except Exception as e:
+            logger.error(f"SQL validation failed, passing through: {e}")
+            return sql, {"ok": True, "repairs": [], "problems": [],
+                         "missing": [], "unknown_tables": [], "ambiguous": []}
+
     def _full_schema(self):
         """
         ARGO schema plus any domain tables that actually exist.
@@ -504,11 +581,14 @@ Response:"""
                         f"\n- fisheries_landings: {marine['fisheries_rows']:,} records, "
                         f"{marine['species_count']} species across {marine['zones']} Indian coastal zones, "
                         f"{marine['total_catch_tonnes']:,.1f} tonnes total.\n"
-                        f"- edna_samples: {marine['edna_rows']:,} reads, "
-                        f"{marine['taxa_count']} assigned taxa, "
-                        f"{marine['unassigned_motus']:,} unassigned MOTUs (dark diversity).\n"
-                        f"- All three domains cover the same window (1-5 January 2024) "
-                        f"and overlap spatially, so they can be joined."
+                        f"- biodiversity_occurrences: {marine['biodiversity_rows']:,} REAL OBIS "
+                        f"observations, {marine['species_observed']:,} distinct accepted species, "
+                        f"{marine['data_providers']:,} data providers, "
+                        f"{marine['dna_records']:,} DNA-derived (eDNA) records"
+                        + (f", observation years {marine['year_min']}-{marine['year_max']}."
+                           if marine.get('year_min') else ".")
+                        + "\n- Biodiversity records span many decades, so do NOT restrict them "
+                          "to the ARGO time window; join biodiversity to ARGO on SPACE only."
                     )
             except Exception as e:
                 logger.warning(f"Could not read marine coverage: {e}")
@@ -606,7 +686,15 @@ Response:"""
             logger.error(f"Error repairing SQL: {e}")
             return None
 
-    def _summarize_results(self, question: str, df: pd.DataFrame):
+    def _summarize_results(self, question: str, df: pd.DataFrame, sql=None):
+        """
+        Produce an expert marine-science briefing grounded in computed facts.
+
+        The statistics, correlations and citations are calculated by
+        marine_analysis before the model is called, so the LLM narrates a
+        closed set of verified numbers rather than generating its own. If
+        marine_analysis is unavailable the previous behaviour is preserved.
+        """
         if df.empty:
             return (
                 "No data found matching your criteria. This could mean the area or "
@@ -614,7 +702,39 @@ Response:"""
                 "query parameters were too restrictive."
             )
 
-        # Create a concise data summary for the LLM
+        if marine_analysis is None:
+            return self._legacy_summary(question, df)
+
+        try:
+            facts = marine_analysis.build_facts_block(question, df, sql)
+            domains = marine_analysis.domain_labels(sql)
+            sources = marine_analysis.build_sources_block(sql)
+        except Exception as e:
+            logger.error(f"Fact computation failed: {e}")
+            return self._legacy_summary(question, df)
+
+        prompt = self.response_prompt_template.format(
+            question=question,
+            domains=", ".join(domains) if domains else
+                    "not determinable from the executed SQL",
+            facts=facts,
+        )
+
+        try:
+            narrative = self.llm.invoke(prompt)
+        except Exception as e:
+            # The model is unreachable - fall back to a fully deterministic
+            # briefing rather than an apology. The figures are identical
+            # because they came from the same computation.
+            logger.error(f"Error generating response: {e}")
+            narrative = marine_analysis.deterministic_summary(df, sql)
+
+        # Provenance is appended in code, never left to the model, so a source
+        # can only be cited when the SQL genuinely referenced its table.
+        return f"{str(narrative).strip()}\n{sources}"
+
+    def _legacy_summary(self, question: str, df: pd.DataFrame):
+        """Original concise summariser, retained as a safety net."""
         if len(df) == 1 and len(df.columns) == 1:
             value = df.iloc[0, 0]
             col_name = df.columns[0]
@@ -624,7 +744,7 @@ Response:"""
                 value_str = str(value)
             data_summary = f"Single result: {col_name} = {value_str}"
         else:
-            cols = ', '.join(df.columns[:4])  # Only first 4 columns
+            cols = ', '.join(df.columns[:4])
             sample = df.head(2).to_dict('records')
             extra = ""
             if 'float_id' in df.columns:
@@ -633,13 +753,12 @@ Response:"""
                 f"Found {len(df)} records with columns: {cols}.{extra} "
                 f"Sample values: {sample}"
             )
-
-        prompt = self.response_prompt_template.format(
-            question=question, data_summary=data_summary
-        )
-
         try:
-            return self.llm.invoke(prompt)
+            return self.llm.invoke(
+                "You are an expert oceanographer. Summarise these results in "
+                f"2-3 sentences without inventing numbers.\n\nQuestion: {question}"
+                f"\n\nData: {data_summary}\n\nResponse:"
+            )
         except Exception as e:
             logger.error(f"Error generating response: {e}")
             return (
@@ -726,6 +845,30 @@ Response:"""
                 )
                 return base
 
+            # --- Schema validation BEFORE execution -------------------------
+            # Catches column/table errors while we can still act on them,
+            # instead of surfacing a database traceback to the user.
+            sql_query, report = self._check_sql(sql_query)
+            if not report["ok"]:
+                logger.warning(f"SQL failed schema validation: {report['problems']}")
+                feedback = " ".join(report["problems"])[:500]
+                retried = self._repair_sql(user_question, sql_query, feedback)
+                if retried:
+                    retried, retry_report = self._check_sql(retried)
+                    if retry_report["ok"]:
+                        sql_query, report = retried, retry_report
+                if not report["ok"]:
+                    # Unrecoverable: explain in domain terms, never raw SQL.
+                    base.update({
+                        "success": True,
+                        "generated_query": sql_query,
+                        "enhanced_response": sql_validator.friendly_error(
+                            report, user_question),
+                        "fallback_used": True,
+                        "error": None,
+                    })
+                    return base
+
             query_result = self.db_manager.execute_query(sql_query)
 
             # One self-repair attempt before giving up.
@@ -737,6 +880,7 @@ Response:"""
                     user_question, sql_query, str(query_result.get("error"))
                 )
                 if repaired:
+                    repaired, _ = self._check_sql(repaired)
                     repaired_result = self.db_manager.execute_query(repaired)
                     if repaired_result["success"]:
                         sql_query = repaired
@@ -749,18 +893,25 @@ Response:"""
                         "success": False,
                         "generated_query": sql_query,
                         "error": query_result.get("error"),
+                        # Technical detail is logged above, not shown. The user
+                        # gets a sentence describing the limitation instead.
                         "enhanced_response": (
-                            "I encountered an error while querying the database. "
-                            "This might be a syntax issue or a connectivity problem. "
-                            "Please try rephrasing your question.\n\n"
-                            f"Details: {query_result.get('error')}"
+                            "This analysis could not be completed against the "
+                            "available data. The query was valid for the schema "
+                            "but the database could not execute it - this usually "
+                            "means the requested combination of fields is not "
+                            "supported for these domains. Try narrowing the "
+                            "question to a single dataset, or asking for a "
+                            "different measurement."
                         ),
                     }
                 )
                 return base
 
             df = pd.DataFrame(query_result["data"])
-            enhanced_response = self._summarize_results(user_question, df)
+            enhanced_response = self._summarize_results(
+                user_question, df, query_result.get("executed_query", sql_query)
+            )
 
             base.update(
                 {
