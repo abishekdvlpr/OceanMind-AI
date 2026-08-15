@@ -10,8 +10,6 @@ BRAND = {
     "tagline": "AI-Driven Unified Marine Intelligence Platform",
     "page_title": "OceanMind AI - Unified Marine Intelligence",
     "platform": "OceanMind AI Platform",
-    "event": "Developed for Smart India Hackathon 2026",
-    "footer_line": "AI • ARGO • Oceanography • Fisheries • Biodiversity",
     "icon": "◉",
 }
 
@@ -46,21 +44,21 @@ SEQUENTIAL = [
     [0.75, "#1677A6"], [1.0, "#082F3E"],
 ]
 DIVERGING = "RdBu_r"
-FONT_STACK = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
+FONT_STACK = "'IBM Plex Sans', 'Segoe UI', sans-serif"
 
 
 def inject_theme():
     p = PALETTE
     return f"""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
 
 :root {{
   --om-bg: {p['bg']}; --om-surface: {p['surface']}; --om-soft: {p['surface_2']};
   --om-border: {p['border']}; --om-text: {p['text']}; --om-muted: {p['text_muted']};
   --om-navy: {p['navy']}; --om-blue: {p['accent']}; --om-teal: {p['accent_2']};
 }}
-html, body, [class*="css"] {{ font-family: {FONT_STACK}; }}
+html, body, [class*="css"] {{ font-family: {FONT_STACK}; font-size: 16.5px; }}
 .stApp {{
   color: {p['text']};
   background:
@@ -106,7 +104,7 @@ hr {{ border-color:{p['border']}; }}
   margin-bottom:.85rem;
 }}
 .om-hero-eyebrow::before {{ content:""; width:7px; height:7px; border-radius:50%; background:{p['accent_2']}; }}
-.om-hero h1 {{ margin:0; font-size:3rem; line-height:1.02; font-weight:800; color:{p['navy']}; max-width:720px; }}
+.om-hero h1 {{ margin:0; font-size:3rem; line-height:1.05; font-weight:800; color:{p['navy']}; max-width:720px; }}
 .om-hero p {{ margin:.72rem 0 0; font-size:1.02rem; line-height:1.55; color:{p['text_muted']}; max-width:650px; }}
 
 @media (max-width: 900px) {{
@@ -282,7 +280,7 @@ hr {{ border-color:{p['border']}; }}
 """
 
 
-def hero(title=None, subtitle=None, eyebrow="Smart India Hackathon 2026"):
+def hero(title=None, subtitle=None, eyebrow="HackFusion 2026"):
     return f"""
 <div class="om-hero">
   <div class="om-hero-eyebrow">{eyebrow}</div>
@@ -376,13 +374,6 @@ def empty_state(icon, title, body):
     return f"""
 <div class="om-empty"><div class="om-empty-icon">{icon}</div><h4>{title}</h4><p>{body}</p></div>
 """
-
-
-def footer():
-    return f"""
-<div class="om-footer"><strong>{BRAND['name']}</strong><span>{BRAND['event']}</span><span>{BRAND['footer_line']}</span></div>
-"""
-
 
 def style_figure(fig, height=None):
     """Apply the light scientific chart theme. Never changes underlying data."""
