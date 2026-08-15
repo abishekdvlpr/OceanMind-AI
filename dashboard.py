@@ -980,9 +980,6 @@ def main():
         else:
             st.error("❌ AI system is not available. Please check your Ollama installation.")
 
-    # Footer
-    st.markdown(theme.footer(), unsafe_allow_html=True)
-
 
 if __name__ == "__main__":
     main()
