@@ -13,15 +13,6 @@ OceanMind AI is a conversational marine-intelligence platform that helps users e
 
 The project combines **ARGO oceanographic observations**, **marine biodiversity data**, and **fisheries information** behind a unified natural-language interface.
 
----
-
-## Demo
-
-**Current demo context:** HackFusion 2026
-
-[Watch the project demo](https://youtu.be/yyb6x2UbPyU)
-
----
 
 ## Why OceanMind AI?
 
