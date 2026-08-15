@@ -1,139 +1,435 @@
-# 🤖 Conversational ARGO Ocean Data Explorer
+# OceanMind AI
 
-An AI-powered conversational system for exploring and visualizing ARGO oceanographic data using natural language. This project was developed for the Smart India Hackathon 2025.
+> **AI-Driven Unified Marine Intelligence Platform**  
+> Natural-language exploration of oceanographic, biodiversity, and fisheries data.
 
-[![Argo-Image](Image.png)](https://youtu.be/yyb6x2UbPyU)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Streamlit](https://img.shields.io/badge/Streamlit-App-FF4B4B?logo=streamlit&logoColor=white)](https://streamlit.io/)
+[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-PostGIS-4169E1?logo=postgresql&logoColor=white)](https://www.postgresql.org/)
+[![Ollama](https://img.shields.io/badge/Ollama-Llama%203.2-111111)](https://ollama.com/)
+[![ChromaDB](https://img.shields.io/badge/Vector%20Store-ChromaDB-0E7490)](https://www.trychroma.com/)
 
-## 🌟 Overview
+OceanMind AI is a conversational marine-intelligence platform that helps users explore complex scientific datasets without requiring SQL, GIS, programming, or database-schema knowledge. Users can ask questions in plain English and receive grounded answers, validated database queries, interactive visualizations, and source-aware scientific insights.
 
-Oceanographic data from sources like the ARGO float program is vast, complex, and stored in formats like NetCDF that are difficult for non-experts to access. This project bridges that gap by providing an intuitive chatbot interface that allows users—from scientists to policymakers—to ask questions in plain English and receive insightful answers, data visualizations, and summaries in real-time.
+The project combines **ARGO oceanographic observations**, **marine biodiversity data**, and **fisheries information** behind a unified natural-language interface.
 
-The system leverages a Retrieval-Augmented Generation (RAG) pipeline, a local Large Language Model (LLM), and a powerful PostGIS-enabled database to translate natural language into precise SQL queries, democratizing access to critical ocean data.
+---
 
-## ✨ Features
+## Demo
 
-* **Natural Language Querying:** Ask complex questions about ocean data in plain English.
-* **AI-Powered SQL Generation:** A local LLM (Ollama) translates user questions into executable PostgreSQL queries.
-* **Retrieval-Augmented Generation (RAG):** A vector database (ChromaDB) provides the LLM with relevant context about the data, improving query accuracy.
-* **Interactive Visualizations:** The Streamlit dashboard automatically generates geospatial maps, depth profiles, and time-series charts based on the query results.
-* **Robust Data Pipeline:** Efficiently processes raw ARGO NetCDF files, flattens the complex data, and loads it into a structured database.
-* **Geospatial Capabilities:** Powered by PostGIS, the system can answer location-based questions like "What are the nearest floats to this location?".
-* **Local & Private:** Runs entirely on your local machine, ensuring data privacy and no dependency on paid APIs.
+**Current demo context:** HackFusion 2026
 
-## 🛠️ Tech Stack
+[Watch the project demo](https://youtu.be/yyb6x2UbPyU)
 
-* **Backend:** Python
-* **AI Engine:** Ollama (with Llama 3.2)
-* **AI Framework:** LangChain
-* **Databases:**
-    * **Relational:** PostgreSQL + PostGIS (for structured and geospatial data)
-    * **Vector:** ChromaDB (for contextual metadata and RAG)
-* **Frontend:** Streamlit
-* **Data Processing:** xarray, pandas, NumPy
-* **Visualizations:** Plotly
+---
 
-## 🏗️ System Architecture
+## Why OceanMind AI?
 
-The application is built on a modular architecture that separates data processing from the real-time query lifecycle.
+Marine datasets are scientifically valuable but difficult to work with directly. Oceanographic observations are often distributed in formats such as NetCDF, while biodiversity and fisheries datasets may have different schemas, spatial conventions, and metadata.
+
+OceanMind AI reduces that complexity by providing one conversational workflow:
+
+**Ask → Understand → Query → Validate → Analyze → Visualize → Explain**
+
+Instead of manually writing SQL or navigating raw scientific files, users can ask questions such as:
+
+- *What is the average temperature below 500 m?*
+- *Which ARGO floats are located in the Arabian Sea?*
+- *Show the temperature and salinity profile for a specific float.*
+- *Which marine species have been observed near Chennai?*
+- *Compare fisheries observations with nearby ocean conditions.*
+
+---
+
+## Core Capabilities
+
+### Natural-Language Marine Queries
+Ask scientific questions in plain English without knowing the underlying database schema.
+
+### AI-Assisted SQL Generation
+A local Ollama-hosted LLM converts user intent into PostgreSQL queries.
+
+### SQL Validation
+Generated SQL is checked before execution to reduce invalid or unsafe queries.
+
+### Retrieval-Augmented Generation
+ChromaDB supplies relevant metadata and contextual information to improve query generation and interpretation.
+
+### Scientific Data Processing
+Raw ARGO NetCDF files are parsed with xarray, transformed with pandas/NumPy, and stored in a structured PostgreSQL/PostGIS database.
+
+### Interactive Visualizations
+The Streamlit workspace can present applicable:
+- geospatial maps,
+- depth profiles,
+- time-series charts,
+- descriptive statistics,
+- correlation matrices,
+- result tables.
+
+### Geospatial Analysis
+PostGIS supports spatial questions such as nearby-float and location-based exploration.
+
+### Multi-Domain Marine Intelligence
+The platform is designed around three marine-data domains:
+
+| Domain | Primary Role |
+|---|---|
+| **ARGO** | Oceanographic observations such as temperature, salinity, pressure/depth, time, and position |
+| **OBIS / Biodiversity** | Marine species-occurrence and biodiversity observations |
+| **Fisheries** | Fisheries-related observations and representative datasets |
+| **Cross-Domain Analysis** | Combined interpretation across available marine datasets |
+
+### Data Provenance
+OceanMind distinguishes between observed/source data, representative datasets, calculated outputs, and AI interpretation rather than presenting every result as equivalent evidence.
+
+### Local-First AI
+The AI engine can run through Ollama on the host machine/server, avoiding mandatory dependence on paid LLM APIs.
+
+---
+
+## Technology Stack
+
+| Layer | Technology |
+|---|---|
+| **Frontend / Workspace** | Streamlit |
+| **Backend** | Python |
+| **LLM Runtime** | Ollama |
+| **Model** | Llama 3.2 |
+| **AI / RAG Framework** | LangChain |
+| **Relational Database** | PostgreSQL |
+| **Geospatial Extension** | PostGIS |
+| **Vector Store** | ChromaDB |
+| **Data Processing** | xarray, pandas, NumPy |
+| **Visualizations** | Plotly |
+| **Scientific Data Format** | NetCDF |
+
+---
+
+## System Architecture
 
 ```mermaid
-graph TD
-    subgraph "Data Ingestion (One-Time ETL)"
-        A[ARGO .nc Files] --> B{Data Processor};
-        B --> C[PostgreSQL + PostGIS];
-        B --> |Metadata Summary| D[ChromaDB Vector Store];
+flowchart TD
+    U[User] --> UI[OceanMind AI - Streamlit]
+
+    subgraph Query_Lifecycle[Real-Time Query Lifecycle]
+        UI --> RAG[RAG / Intent Layer]
+        RAG --> V[(ChromaDB)]
+        V --> RAG
+        RAG --> LLM[Ollama - Llama 3.2]
+        LLM --> SQL[Generated SQL]
+        SQL --> VAL[SQL Validator]
+        VAL --> DB[(PostgreSQL + PostGIS)]
+        DB --> RES[Scientific Results]
+        RES --> RAG
+        RAG --> UI
     end
 
-    subgraph "Query Lifecycle (Real-Time)"
-        U[User] --> |Asks Question| F[Streamlit Frontend];
-        F --> G[RAG System];
-        G --> |User Question| D;
-        D --> |Returns Context| G;
-        G --> |Augmented Prompt| H[Ollama LLM];
-        H --> |Generated SQL| G;
-        G --> |Executes SQL| C;
-        C --> |Query Results| G;
-        G --> |Summarizes Results| H;
-        H --> |Final Answer| G;
-        G --> |Answer + Data| F;
-        F --> |Displays Answer & Visualizations| U;
+    subgraph Data_Layer[Data Ingestion]
+        A[ARGO NetCDF] --> DP[Data Processor]
+        B[Marine Biodiversity] --> MD[Marine Data Layer]
+        C[Fisheries Data] --> MD
+        DP --> DB
+        DP --> V
+        MD --> DB
     end
 ```
 
-## 🔄 Workflow / Data Flow
+The architecture separates **data ingestion** from the **real-time query lifecycle**, allowing scientific data preparation and user-facing analysis to remain modular.
 
-### 1. Data Ingestion & Processing
-This is the initial setup process that prepares the data for querying.
-1.  Raw ARGO NetCDF (`.nc`) files are placed in the `/data` directory.
-2.  The `data_processing.py` script is run.
-3.  For each file, **xarray** opens and parses the complex, multi-dimensional data.
-4.  The script extracts key variables (Temperature, Salinity, Pressure, Time, Location) and flattens them into a tabular format using **pandas**.
-5.  This structured data is bulk-inserted into a **PostgreSQL** table named `argo_profiles`. A `GEOMETRY` column is created for fast geospatial lookups.
-6.  A concise, natural language summary of each float's metadata (e.g., its ID, project name, and measured parameters) is generated.
-7.  This summary is converted into a vector embedding and stored in the **ChromaDB** vector store, creating an index for contextual search.
+---
 
-### 2. Conversational Query Lifecycle
-This is what happens every time a user asks a question in the chatbot.
-1.  The user types a question into the **Streamlit** interface (e.g., "What are the average temperatures below 500m?").
-2.  The question is sent to the **RAG System**.
-3.  The RAG system embeds the user's question and queries **ChromaDB** to find metadata of floats that are semantically similar or relevant to the question.
-4.  A detailed prompt is constructed containing:
-    * Strict rules and examples for writing good SQL.
-    * The database schema.
-    * The retrieved context from ChromaDB.
-    * The user's original question.
-5.  This "augmented prompt" is sent to the **Ollama LLM**.
-6.  The LLM generates a precise PostgreSQL query based on the prompt.
-7.  The RAG system executes this query against the **PostgreSQL** database.
-8.  The raw data results are returned.
-9.  The results are passed back to the LLM with a final prompt asking it to generate a human-friendly summary.
-10. The final summary, along with the raw data, is sent back to the **Streamlit** frontend, which displays the answer, a data table, and interactive visualizations.
+## ARGO Data Ingestion Workflow
 
-## 🚀 Setup and Installation
+1. Place raw ARGO NetCDF (`.nc`) files in the configured data directory.
+2. The data processor opens each file using **xarray**.
+3. Relevant variables such as temperature, salinity, pressure/depth, time, and position are extracted.
+4. Multi-dimensional observations are flattened into tabular form with **pandas**.
+5. Structured observations are inserted into PostgreSQL/PostGIS.
+6. Float metadata is summarized for retrieval.
+7. Metadata embeddings are persisted in **ChromaDB**.
 
-1.  **Clone the repository:**
-    ```bash
-    git clone <your-repo-url>
-    cd <your-repo-name>
-    ```
-2.  **Create a virtual environment and install dependencies:**
-    ```bash
-    python -m venv .venv
-    source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-    pip install -r requirements.txt
-    ```
-3.  **Set up PostgreSQL:**
-    * Install PostgreSQL.
-    * Install the **PostGIS** extension using Stack Builder.
-    * Create a new user and database using `psql`:
-        ```sql
-        CREATE USER argo_user WITH PASSWORD 'your_password';
-        CREATE DATABASE argo_db OWNER argo_user;
-        \c argo_db
-        -- Login as a superuser (e.g., postgres) to run this next command
-        CREATE EXTENSION postgis; 
-        ```
-4.  **Set up AI Engine:**
-    * Install and run [Ollama](https://ollama.ai/).
-    * Pull the required model: `ollama pull llama3.2`
-5.  **Configure the Application:**
-    * Update `config.py` with your PostgreSQL credentials and correct Ollama model name, or set the corresponding environment variables.
-6.  **Process Data:**
-    * Place your ARGO `.nc` files into the `/data` directory.
-    * Run the data processing script: `data_processing_verbose.py`
+This creates both:
+- a structured SQL layer for deterministic analysis, and
+- a vector context layer for RAG-assisted query generation.
 
-## ▶️ How to Use
+---
 
-1.  Ensure PostgreSQL and Ollama are running.
-2.  Launch the Streamlit dashboard:
-    ```bash
-    streamlit run dashboard.py
-    ```
-3.  Open the provided URL in your browser and start asking questions!
+## Conversational Query Lifecycle
 
-## 🔮 Future Work
+When a user asks a question:
 
-* Add data export functionality to NetCDF and ASCII formats.
-* Integrate additional in-situ datasets (BGC, gliders, buoys).
-* Extend the pipeline to support satellite datasets.
-* Implement a more advanced caching layer for frequently asked questions.
+1. OceanMind receives the natural-language query.
+2. The RAG layer identifies relevant context.
+3. ChromaDB retrieves matching metadata.
+4. The application constructs an augmented prompt using schema information, retrieved context, SQL-generation rules, and the original question.
+5. Ollama generates PostgreSQL SQL.
+6. The SQL validator checks the generated query.
+7. The validated query runs against PostgreSQL/PostGIS.
+8. Returned observations are analyzed deterministically where applicable.
+9. OceanMind generates a human-readable scientific explanation.
+10. Streamlit displays the explanation, source data, technical query details, and applicable visualizations.
+
+---
+
+## Project Structure
+
+```text
+OceanMind-AI/
+├── dashboard.py                # Streamlit UI and interaction layer
+├── theme.py                    # OceanMind visual design system
+├── rag_system.py               # RAG + LLM query workflow
+├── sql_validator.py            # SQL validation and safety checks
+├── database_manager.py         # PostgreSQL/PostGIS access
+├── data_processing.py          # ARGO NetCDF ingestion
+├── data_processing_verbose.py  # Verbose ingestion utility
+├── marine_data.py              # Fisheries / biodiversity data layer
+├── marine_analysis.py          # Marine analysis utilities
+├── obis_client.py              # OBIS integration
+├── proximity.py                # Spatial proximity support
+├── config.py                   # Application configuration
+├── requirements.txt            # Python dependencies
+├── env.example                 # Environment-variable template
+└── data/                       # Local scientific data files
+```
+
+> The exact contents of the `data/` directory depend on the local/server deployment and may not be fully stored in Git.
+
+---
+
+## Local Setup
+
+### Prerequisites
+
+Install:
+
+- Python 3.10+
+- PostgreSQL
+- PostGIS
+- Ollama
+- Git
+
+### 1. Clone the repository
+
+```bash
+git clone https://github.com/abishekdvlpr/OceanMind-AI.git
+cd OceanMind-AI
+```
+
+### 2. Create a virtual environment
+
+**Windows PowerShell**
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+```
+
+**Linux / macOS**
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+```
+
+### 3. Install dependencies
+
+```bash
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### 4. Configure PostgreSQL + PostGIS
+
+Create the database and user:
+
+```sql
+CREATE USER argo_user WITH PASSWORD 'your_password';
+CREATE DATABASE argo_db OWNER argo_user;
+```
+
+Connect to `argo_db` as a PostgreSQL superuser and enable PostGIS:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS postgis;
+```
+
+### 5. Configure Ollama
+
+Install Ollama and pull the required model:
+
+```bash
+ollama pull llama3.2
+```
+
+Confirm the model is available:
+
+```bash
+ollama list
+```
+
+### 6. Configure environment variables
+
+Create a local environment file from the example:
+
+**Windows PowerShell**
+
+```powershell
+Copy-Item env.example .env
+```
+
+**Linux / macOS**
+
+```bash
+cp env.example .env
+```
+
+Configure the values for your environment, including PostgreSQL and Ollama settings.
+
+Typical local values include:
+
+```env
+PGHOST=localhost
+PGPORT=5432
+PGDATABASE=argo_db
+PGUSER=argo_user
+PGPASSWORD=your_password
+
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=llama3.2:latest
+```
+
+> Never commit real passwords, API credentials, or `.env` files to Git.
+
+### 7. Load scientific data
+
+Place ARGO `.nc` files in the configured `data/` directory.
+
+You can then use the application's **Ingest ARGO Dataset** control or the project ingestion utilities to populate PostgreSQL and ChromaDB.
+
+Marine biodiversity and fisheries datasets can be initialized through their corresponding application controls when configured.
+
+### 8. Run OceanMind AI
+
+```bash
+streamlit run dashboard.py
+```
+
+Open the local URL shown by Streamlit, normally:
+
+```text
+http://localhost:8501
+```
+
+---
+
+## Example Queries
+
+```text
+Show the temperature and salinity profile for float 2903140
+```
+
+```text
+Which floats are located in the Arabian Sea?
+```
+
+```text
+What is the average temperature below 500 m depth?
+```
+
+```text
+Show biodiversity near Chennai
+```
+
+```text
+Species recorded in the Bay of Bengal
+```
+
+```text
+Compare fish catch with sea-surface temperature by zone
+```
+
+---
+
+## Deployment Note
+
+A complete public deployment requires more than hosting the Python source code.
+
+The deployed environment must provide shared access to:
+
+- the Streamlit application,
+- PostgreSQL/PostGIS,
+- persistent ChromaDB storage,
+- Ollama and its model,
+- the required scientific datasets.
+
+For this reason, static hosts such as GitHub Pages are not sufficient for the full application. A persistent server/container deployment is recommended so that all users query the same ingested datasets.
+
+---
+
+## Security & Data Handling
+
+- Keep `.env` and database credentials outside version control.
+- Use a restricted PostgreSQL account for the deployed application.
+- Keep public query execution read-only where possible.
+- Perform dataset ingestion from trusted administrative workflows.
+- Validate generated SQL before execution.
+- Do not expose administrative ingestion controls unnecessarily on public deployments.
+
+---
+
+## Current Scope
+
+OceanMind AI currently focuses on conversational exploration and analysis of available marine datasets through a unified scientific workspace.
+
+The platform is designed to preserve transparency by exposing source context, generated SQL, result data, and applicable visualizations instead of presenting an AI-generated response without evidence.
+
+---
+
+## Future Work
+
+Potential extensions include:
+
+- additional in-situ datasets such as BGC-Argo, gliders, and buoys,
+- satellite ocean-observation products,
+- broader fisheries data integration,
+- additional marine biodiversity and molecular datasets,
+- expanded scientific provenance metadata,
+- improved caching for repeated analytical queries,
+- scalable cloud-native deployment,
+- additional export formats such as NetCDF and ASCII.
+
+---
+
+## Acknowledgements
+
+OceanMind AI builds on open scientific and open-source ecosystems including:
+
+- the international **ARGO** ocean-observation program,
+- **OBIS** marine biodiversity infrastructure,
+- PostgreSQL / PostGIS,
+- Streamlit,
+- Ollama,
+- ChromaDB,
+- LangChain,
+- Plotly,
+- xarray,
+- pandas,
+- NumPy.
+
+Dataset licences and source-specific attribution should be retained with the corresponding records where applicable.
+
+---
+
+## License
+
+No software licence was specified in the supplied repository README.
+
+Before public reuse or distribution, add an explicit licence file appropriate to the project and verify the licences/attribution requirements of all included datasets.
+
+---
+
+<p align="center">
+  <strong>OceanMind AI</strong><br>
+  Unified Marine Intelligence through natural language.
+</p>
