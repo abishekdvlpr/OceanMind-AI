@@ -555,6 +555,7 @@ def render_landing(executor):
 def main():
     # Hero
     st.markdown(theme.hero(), unsafe_allow_html=True)
+    st.markdown(theme.domain_strip(), unsafe_allow_html=True)
 
     # Initialize session state
     if "messages" not in st.session_state:
@@ -573,7 +574,7 @@ def main():
             st.markdown(theme.status_pill("AI Engine Offline", "error"), unsafe_allow_html=True)
 
         # ---- Data management ----
-        st.markdown(theme.nav_label("Data Pipeline"), unsafe_allow_html=True)
+        st.markdown(theme.nav_label("Data Administration"), unsafe_allow_html=True)
 
         if st.button("⬇  Ingest ARGO Dataset", type="primary", use_container_width=True):
             with st.spinner("Processing ARGO NetCDF files... This may take a moment."):
@@ -701,7 +702,7 @@ def main():
                             st.error(f"❌ OBIS harvest failed: {e}")
 
         # ---- Example queries ----
-        st.markdown(theme.nav_label("Suggested Queries"), unsafe_allow_html=True)
+        st.markdown(theme.nav_label("Suggested Questions"), unsafe_allow_html=True)
 
         # Demo questions are chosen to match the ingested coverage (5-day core-Argo
         # archive). Each one has been verified to return a non-empty, meaningful
@@ -723,7 +724,7 @@ def main():
                 st.rerun()
 
         # ---- Coverage ----
-        st.markdown(theme.nav_label("Dataset Coverage"), unsafe_allow_html=True)
+        st.markdown(theme.nav_label("Data Coverage"), unsafe_allow_html=True)
 
         try:
             db_manager = executor.db_manager if executor else get_db_manager()
@@ -753,10 +754,11 @@ def main():
     if not st.session_state.messages:
         render_landing(executor)
 
-    # Main chat interface
+    # Main chat interface (presentation-only hierarchy; query engine is unchanged)
+    st.markdown(theme.query_intro(), unsafe_allow_html=True)
     st.markdown(theme.section_header(
-        "Conversational Ocean Data Analysis",
-        "Ask in plain English · answers are grounded in the ARGO archive"
+        "Marine Intelligence Workspace",
+        "Natural-language analysis grounded in available marine datasets"
     ), unsafe_allow_html=True)
 
     # Display chat messages
@@ -923,7 +925,7 @@ def main():
     # Chat input
     prompt = st.session_state.pop("selected_example", None)
 
-    chat_prompt = st.chat_input("Ask OceanMind AI about the ocean data...")
+    chat_prompt = st.chat_input("Ask about oceanography, biodiversity or fisheries...")
     if prompt is None:
         prompt = chat_prompt
 
